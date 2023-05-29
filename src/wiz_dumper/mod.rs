@@ -83,6 +83,14 @@ impl KIString for String {
     }
 }
 
+fn capitalize_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct EnumValue {
     name: String,
@@ -202,7 +210,14 @@ impl ClassProperty {
                 }
             );
 
-            let safe_name = self.property_name.as_safe().replace(".", "_");
+            let mut safe_name = self.property_name.as_safe().replace(".", "_");
+            if safe_name == "default" {
+                safe_name = "default_".to_owned();
+            }
+
+            if safe_name == "Color" {
+                safe_name = "color".to_owned();
+            }
 
             // property
             ret += &format!(
@@ -214,54 +229,6 @@ impl ClassProperty {
                 } else {
                     format!(" // {}", &self.property_note)
                 }
-            );
-        }
-        ret
-    }
-
-    fn serialize_getter_setter(&self) -> String {
-        let mut ret = String::from("");
-        if self.enum_info.is_none() {
-            let full_type = format!(
-                "{}{}{}",
-                if !self.container_type.is_empty() {
-                    format!("{}<", self.container_type)
-                } else {
-                    String::from("")
-                },
-                self.property_type.as_safe().replace_missing(),
-                if !self.container_type.is_empty() {
-                    String::from(">")
-                } else {
-                    String::from("")
-                }
-            );
-
-            let safe_name = self.property_name.as_safe().replace(".", "_");
-            // getter
-            ret += &format!(
-                "\n     {} get_{}() {{ return *reinterpret_cast<{}*>(this + {}); }}\n",
-                full_type,
-                if full_type == "bool" {
-                    String::from("is_") + &safe_name
-                } else {
-                    safe_name.clone()
-                },
-                full_type,
-                self.offset,
-            );
-
-            // setter
-            ret += &format!(
-                "\n     void set_{}({} val) {{ *reinterpret_cast<{}*>(this + {}) = val; }}\n",
-                if full_type == "bool" {
-                    String::from("is_") + &safe_name
-                } else {
-                    safe_name
-                },
-                full_type,
-                full_type,
-                self.offset,
             );
         }
         ret
@@ -327,6 +294,85 @@ enum ClassTypeT {
     CLASS,
     STRUCT,
 }
+
+#[derive(Debug, Clone)]
+struct GetterSetter {
+    full_type: String,
+    full_get_name: String,
+    full_set_name: String,
+    prop: ClassProperty,
+}
+
+impl GetterSetter {
+    fn new(prop: &ClassProperty) -> GetterSetter {
+        let pascal = true; // TODO: will this work with map as a function param?
+        let full_type = format!(
+            "{}{}{}",
+            if !prop.container_type.is_empty() {
+                format!("{}<", prop.container_type)
+            } else {
+                String::from("")
+            },
+            prop.property_type.as_safe().replace_missing(),
+            if !prop.container_type.is_empty() {
+                String::from(">")
+            } else {
+                String::from("")
+            }
+        )
+        .replace(">>", "> >");
+
+        let mut safe_name = prop.property_name.as_safe().replace(".", "_");
+        if pascal {
+            safe_name = capitalize_first(&safe_name);
+        }
+
+        let full_get_name = format!(
+            "{}{}",
+            if pascal {
+                String::from("Get")
+            } else {
+                String::from("get_")
+            },
+            if full_type == "bool" {
+                if pascal {
+                    String::from("Is") + &safe_name
+                } else {
+                    String::from("is_") + &safe_name
+                }
+            } else {
+                safe_name.clone()
+            }
+        );
+
+        let full_set_name = full_get_name.replace("get", "set").replace("Get", "Set");
+
+        GetterSetter {
+            full_type,
+            full_get_name,
+            full_set_name,
+            prop: prop.clone(),
+        }
+    }
+
+    fn serialize(&self, pascal: bool) -> String {
+        let mut ret = String::from("");
+
+        // getter
+        ret += &format!(
+            "\n     {} {}() {{ return *reinterpret_cast<{}*>(this + {}); }}\n",
+            self.full_type, self.full_get_name, self.full_type, self.prop.offset,
+        );
+
+        // setter
+        ret += &format!(
+            "\n     void {}({} val) {{ *reinterpret_cast<{}*>(this + {}) = val; }}\n",
+            self.full_set_name, self.full_type, self.full_type, self.prop.offset,
+        );
+        ret
+    }
+}
+
 #[derive(Debug, Clone)]
 struct WizClass {
     class_type: ClassTypeT,
@@ -339,6 +385,7 @@ struct WizClass {
     sub_classes: Vec<WizClass>,
     namespace: Option<String>,
     is_subclass: bool,
+    getters_setters: Vec<GetterSetter>,
 }
 
 impl WizClass {
@@ -367,6 +414,8 @@ impl WizClass {
 
         properties.sort_by_key(|prop| prop.offset.parse::<i32>().unwrap_or(0));
 
+        let getters_setters = properties.iter().map(GetterSetter::new).collect();
+
         let functions = node
             .children()
             .filter(|child| child.tag_name().name() == "Function")
@@ -394,6 +443,7 @@ impl WizClass {
             sub_classes: vec![],
             namespace: None,
             is_subclass: false,
+            getters_setters,
         }
     }
 
@@ -407,7 +457,7 @@ impl WizClass {
         self.functions.len() + self.sub_classes.len() + self.properties.len()
     }
 
-    fn serialize(&self, sub_class: bool) -> String {
+    fn serialize(&self, sub_class: bool, total_size: i64) -> String {
         let type_str = match self.class_type {
             ClassTypeT::CLASS => "class",
             ClassTypeT::STRUCT => "struct",
@@ -481,31 +531,40 @@ impl WizClass {
             }
         );
 
+        if total_size < 0 {
+            class_def +=
+                "     /*  error calculating total class size, summed parent sizes > this class size */      "
+        } else {
+            class_def += &format!("     uint8_t padding[{}];\n", total_size.to_string());
+        }
+
         let mut sorted = self.sub_classes.clone();
         sorted.sort_by_key(|c| c.len());
 
         for sub_class in &sorted {
-            class_def += &sub_class.serialize(true);
+            class_def += &sub_class.serialize(true, 123); // TODO: do this properly
         }
 
         for property in &self.properties {
-            class_def += &format!(
-                "     {}{}",
-                if sub_class {
-                    if !self.is_empty() {
-                        String::from("     ")
+            if property.enum_info.is_some() {
+                class_def += &format!(
+                    "     {}{}",
+                    if sub_class {
+                        if !self.is_empty() {
+                            String::from("     ")
+                        } else {
+                            String::from("")
+                        }
                     } else {
                         String::from("")
-                    }
-                } else {
-                    String::from("")
-                },
-                property.clone().serialize()
-            );
+                    },
+                    property.clone().serialize()
+                );
+            }
         }
 
         for function in &self.functions {
-            class_def += &format!(
+            /*class_def += &format!(
                 "     {}{}",
                 if sub_class {
                     String::from("     ")
@@ -513,12 +572,41 @@ impl WizClass {
                     String::from("")
                 },
                 function.clone().serialize()
-            );
+            );*/
         }
 
-        for property in &self.properties {
-            class_def += &property.serialize_getter_setter();
+        for getter_setter in &self.getters_setters {
+            if getter_setter.prop.enum_info.is_none() {
+                class_def += &getter_setter.serialize(true);
+            }
         }
+
+        // lua initializers:
+        class_def += "\n     static void initialize_lua(lua_State* L) {\n";
+        class_def += "          luabridge::getGlobalNamespace(L)\n";
+        class_def += &format!(
+            "               .beginClass<{}>(\"{}\")\n",
+            self.class_name.as_safe(),
+            self.class_name,
+        );
+        for getter_setter in &self.getters_setters {
+            if getter_setter.prop.enum_info.is_none() {
+                class_def += &format!(
+                    "                    .addFunction(\"{}\", &{}::{})\n",
+                    getter_setter.full_get_name,
+                    self.class_name.as_safe(),
+                    getter_setter.full_get_name
+                );
+                class_def += &format!(
+                    "                    .addFunction(\"{}\", &{}::{})\n",
+                    getter_setter.full_set_name,
+                    self.class_name.as_safe(),
+                    getter_setter.full_set_name
+                );
+            }
+        }
+        class_def += "               .endClass();\n";
+        class_def += "     }\n";
 
         class_def += &format!(
             "{}}};\n",
@@ -917,7 +1005,25 @@ struct bui7 {
                 }
 
                 if let Some(found_class) = classes.find_by_name(package.name.clone()) {
-                    ret += &format!("{}\n", found_class.serialize(false).replace(">>", "> >"));
+                    let mut total_size = found_class.size.parse::<i64>().unwrap();
+                    if found_class.base_class_name.is_some() {
+                        let mut parent_name = found_class.clone().base_class_name.unwrap();
+                        while let Some(parent_class) = classes.find_by_name(parent_name) {
+                            total_size -= parent_class.size.parse::<i64>().unwrap();
+                            if parent_class.base_class_name.is_some() {
+                                parent_name = parent_class.base_class_name.unwrap();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    ret += &format!(
+                        "{}\n",
+                        found_class
+                            .serialize(false, total_size)
+                            .replace(">>", "> >")
+                    );
                     serialized_classes.insert(package.name.clone());
                 }
             }
