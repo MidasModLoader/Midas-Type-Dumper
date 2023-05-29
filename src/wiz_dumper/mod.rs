@@ -18,6 +18,8 @@ trait KIString {
     fn remove_sharedptr(&self) -> String;
 
     fn remove_duplicate_class(&self) -> String;
+
+    fn replace_missing(&self) -> String;
 }
 
 impl KIString for String {
@@ -65,6 +67,20 @@ impl KIString for String {
         }
         self.to_string()
     }
+
+    fn replace_missing(&self) -> String {
+        self.replace("BattlegroundPlayerStats::PlayerTeamEnum", "MISSING_TYPE")
+            .replace("eGender", "MISSING_TYPE")
+            .replace("PhysicsSimMass::CylinderDirection", "MISSING_TYPE")
+            .replace("ProxyType", "BoxGeomParams::ProxyType")
+            .replace("DoodleDoug::DdDirection", "MISSING_TYPE")
+            .replace("CrownShopViews::OnSelectCallbackArg", "MISSING_TYPE")
+            .replace("SegmentationRequrinment::OPERATOR_TYPE", "MISSING_TYPE")
+            .replace(
+                "DynamicSigilSymbol",
+                "DynamicSigilSubcircle::DynamicSigilSymbol",
+            )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +116,8 @@ impl ClassProperty {
                     .map_or(false, |attr| attr.contains("enum"))
             });
 
+        let mut encountered_names = HashSet::new();
+
         let enum_info = if is_enum {
             let first_child = node.first_element_child().unwrap();
             let enum_name = first_child.attribute("Name").unwrap().to_string();
@@ -108,11 +126,12 @@ impl ClassProperty {
             let mut cur = first_child.first_element_child().unwrap();
             while let Some(next_sibling) = cur.next_sibling_element() {
                 let e_name = cur.attribute("Name").unwrap().to_string().replace(" ", "");
-                if e_name != "__DEFAULT" {
+                if e_name != "__DEFAULT" && !encountered_names.contains(&e_name) {
                     enum_values.push(EnumValue {
-                        name: e_name,
+                        name: e_name.clone(),
                         value: cur.attribute("Value").unwrap().to_string(),
                     });
+                    encountered_names.insert(e_name);
                 }
                 cur = next_sibling;
             }
@@ -126,9 +145,17 @@ impl ClassProperty {
         };
 
         ClassProperty {
-            property_name: node.attribute("Name").unwrap().to_string(),
+            property_name: node
+                .attribute("Name")
+                .unwrap()
+                .to_string()
+                .replace("m_", ""),
             property_type,
-            property_note: node.attribute("Note").unwrap().to_string(),
+            property_note: node
+                .attribute("Note")
+                .unwrap()
+                .to_string()
+                .replace("m_", ""),
             offset: node.attribute("Offset").unwrap().to_string(),
             container_type: match node.attribute("Container").unwrap().to_string().as_str() {
                 "Vector" => String::from("std::vector"),
@@ -141,10 +168,6 @@ impl ClassProperty {
             },
             enum_info,
         }
-    }
-
-    fn is_enum(&self) -> bool {
-        self.enum_info.is_some()
     }
 
     fn serialize(self) -> String {
@@ -164,25 +187,81 @@ impl ClassProperty {
             }
             ret += &format!("     }};\n");
         } else {
-            ret += &format!(
-                "{}{}{} {};{}\n",
+            let full_type = format!(
+                "{}{}{}",
                 if !self.container_type.is_empty() {
                     format!("{}<", self.container_type)
                 } else {
                     String::from("")
                 },
-                self.property_type.as_safe(),
+                self.property_type.as_safe().replace_missing(),
                 if !self.container_type.is_empty() {
                     String::from(">")
                 } else {
                     String::from("")
-                },
-                self.property_name.as_safe().replace(".", "_"),
+                }
+            );
+
+            let safe_name = self.property_name.as_safe().replace(".", "_");
+
+            // property
+            ret += &format!(
+                "{} {};{}\n",
+                full_type,
+                safe_name,
                 if self.property_note == self.property_name {
                     String::from("")
                 } else {
                     format!(" // {}", &self.property_note)
                 }
+            );
+        }
+        ret
+    }
+
+    fn serialize_getter_setter(&self) -> String {
+        let mut ret = String::from("");
+        if self.enum_info.is_none() {
+            let full_type = format!(
+                "{}{}{}",
+                if !self.container_type.is_empty() {
+                    format!("{}<", self.container_type)
+                } else {
+                    String::from("")
+                },
+                self.property_type.as_safe().replace_missing(),
+                if !self.container_type.is_empty() {
+                    String::from(">")
+                } else {
+                    String::from("")
+                }
+            );
+
+            let safe_name = self.property_name.as_safe().replace(".", "_");
+            // getter
+            ret += &format!(
+                "\n     {} get_{}() {{ return *reinterpret_cast<{}*>(this + {}); }}\n",
+                full_type,
+                if full_type == "bool" {
+                    String::from("is_") + &safe_name
+                } else {
+                    safe_name.clone()
+                },
+                full_type,
+                self.offset,
+            );
+
+            // setter
+            ret += &format!(
+                "\n     void set_{}({} val) {{ *reinterpret_cast<{}*>(this + {}) = val; }}\n",
+                if full_type == "bool" {
+                    String::from("is_") + &safe_name
+                } else {
+                    safe_name
+                },
+                full_type,
+                full_type,
+                self.offset,
             );
         }
         ret
@@ -226,14 +305,14 @@ impl ClassFunction {
     fn serialize(&self) -> String {
         let mut ret = format!(
             "virtual {} {}(",
-            self.return_type.as_safe(),
+            self.return_type.as_safe().replace_missing(),
             self.function_name
         );
         for i in 0..self.arg_count {
             let name = format!("arg{}", i.to_string());
             ret += &format!(
                 "{} {}{}",
-                &self.arg_types[0].as_safe(),
+                &self.arg_types[0].as_safe().replace_missing(),
                 name,
                 if i == self.arg_count - 1 { "" } else { ", " }
             )
@@ -272,6 +351,20 @@ impl WizClass {
             .map(ClassProperty::new)
             .collect();
 
+        let mut known_enum_names = HashSet::new();
+        for prop in &mut properties {
+            if let Some(enum_info) = &mut prop.enum_info {
+                for i in 0..enum_info.values.len() {
+                    let enum_val = &enum_info.values[i];
+                    if known_enum_names.contains(&enum_val.name) {
+                        enum_info.values[i].name += "_";
+                        continue;
+                    }
+                    known_enum_names.insert(enum_val.name.clone());
+                }
+            }
+        }
+
         properties.sort_by_key(|prop| prop.offset.parse::<i32>().unwrap_or(0));
 
         let functions = node
@@ -304,34 +397,14 @@ impl WizClass {
         }
     }
 
-    fn get_parent_name(&self) -> Option<String> {
-        let safe = self.class_name.clone();
-        if safe.contains("::") && !safe.contains("std::") {
-            Some(safe[..safe.find("::").unwrap()].to_string())
-        } else {
-            None
-        }
-    }
-
-    fn get_parent<'a>(&self, classes: &'a mut [WizClass]) -> Option<&'a mut WizClass> {
-        let parent_name = self.get_parent_name();
-        if let Some(p_name) = parent_name {
-            classes.iter_mut().find(|c| c.class_name == p_name)
-        } else {
-            None
-        }
-    }
-
     fn is_empty(&self) -> bool {
-        /*let mut empty = self.functions.is_empty() && self.sub_classes.is_empty();
-        for prop in &self.properties {
-            if prop.is_enum() {
-                empty = false;
-            }
-        }*/
-        let mut empty =
+        let empty =
             self.functions.is_empty() && self.sub_classes.is_empty() && self.properties.is_empty();
         return empty;
+    }
+
+    fn len(&self) -> usize {
+        self.functions.len() + self.sub_classes.len() + self.properties.len()
     }
 
     fn serialize(&self, sub_class: bool) -> String {
@@ -397,25 +470,64 @@ impl WizClass {
             if self.is_empty() {
                 String::from("")
             } else {
-                String::from("public:\n")
+                format!(
+                    "{}public:\n",
+                    if sub_class {
+                        String::from("     ")
+                    } else {
+                        String::from("")
+                    },
+                )
             }
         );
 
-        for sub_class in &self.sub_classes {
+        let mut sorted = self.sub_classes.clone();
+        sorted.sort_by_key(|c| c.len());
+
+        for sub_class in &sorted {
             class_def += &sub_class.serialize(true);
         }
 
         for property in &self.properties {
-            //if property.is_enum() {
-            class_def += &format!("     {}", property.clone().serialize());
-            //}
+            class_def += &format!(
+                "     {}{}",
+                if sub_class {
+                    if !self.is_empty() {
+                        String::from("     ")
+                    } else {
+                        String::from("")
+                    }
+                } else {
+                    String::from("")
+                },
+                property.clone().serialize()
+            );
         }
 
         for function in &self.functions {
-            class_def += &format!("     {}", function.clone().serialize());
+            class_def += &format!(
+                "     {}{}",
+                if sub_class {
+                    String::from("     ")
+                } else {
+                    String::from("")
+                },
+                function.clone().serialize()
+            );
         }
 
-        class_def += &format!("}};\n",);
+        for property in &self.properties {
+            class_def += &property.serialize_getter_setter();
+        }
+
+        class_def += &format!(
+            "{}}};\n",
+            if sub_class {
+                String::from("     ")
+            } else {
+                String::from("")
+            }
+        );
 
         if self.namespace.is_some() {
             class_def += "}\n";
@@ -437,7 +549,10 @@ impl ClassesContainer {
                 .descendants()
                 .enumerate()
                 .filter_map(|(_index, node)| {
-                    (node.tag_name().name() == "Class").then(|| WizClass::new(node))
+                    (node.tag_name().name() == "Class"
+                        && !node.attribute("Name").unwrap().contains("MadlibArgT")
+                        && !node.attribute("Name").unwrap().contains("WeightedEntryT"))
+                    .then(|| WizClass::new(node))
                 })
                 .collect::<Vec<_>>(),
         }
@@ -447,19 +562,13 @@ impl ClassesContainer {
         let cloned = self.classes.clone();
         for i in (0..self.classes.len()).rev() {
             let class = &cloned[i];
-            if let Some(parent) = class.get_parent(&mut self.classes) {
-                parent.sub_classes.push(class.clone());
-                println!(
-                    "added {} as a subclass of {}",
-                    class.class_name, parent.class_name
-                );
-                self.classes[i].is_subclass = true;
-                //self.classes.remove(i);
-            }
-
-            if let Some(parent_name) = class.get_parent_name() {
-                if class.get_parent(&mut self.classes).is_none() {
-                    self.classes[i].namespace = Some(parent_name);
+            if let Some(mut top_level) = class.class_name.get_namespace() {
+                top_level = top_level.replace("struct", "class");
+                if let Some(parent_idx) = self.find_idx_by_name(top_level.clone()) {
+                    self.classes[parent_idx].sub_classes.push(class.clone());
+                    self.classes[i].is_subclass = true;
+                } else {
+                    self.classes[i].namespace = Some(top_level);
                 }
             }
         }
@@ -514,6 +623,39 @@ impl ClassesContainer {
             None
         }
     }
+
+    fn find_idx_by_name(&self, name: String) -> Option<usize> {
+        if let Some((index, _)) = self
+            .classes
+            .iter()
+            .enumerate()
+            .find(|(_, package)| package.class_name == name)
+        {
+            Some(index)
+        } else {
+            None
+        }
+    }
+
+    fn find_maybe_namespace(&self, name: String) -> Option<WizClass> {
+        // check before ::
+        if let Some(namespace) = name.get_namespace() {
+            if let Some(namespace_class) = self.find_by_name(namespace) {
+                return Some(namespace_class);
+            }
+        }
+        // check whole classname
+        if let Some(first_look) = self.find_by_name(name.clone()) {
+            return Some(first_look);
+        }
+
+        // check after namespace
+        if let Some(named) = self.find_by_name(name.remove_namespace()) {
+            return Some(named);
+        }
+
+        return None;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -527,7 +669,7 @@ struct Package {
     dependencies: Vec<Dependency>,
 }
 
-fn collect_deps(class: &WizClass) -> Vec<Dependency> {
+fn collect_deps(class: &WizClass, class_container: &ClassesContainer) -> Vec<Dependency> {
     if class.is_subclass {
         return vec![];
     }
@@ -535,32 +677,22 @@ fn collect_deps(class: &WizClass) -> Vec<Dependency> {
     let mut dependencies = HashSet::new();
 
     if let Some(base_class_name) = &class.base_class_name {
-        if let Some(namespace) = base_class_name.get_namespace() {
-            // we need to check if namespace exists before inserting namespace as dep, if not insert the else clause
-            dependencies.insert(namespace);
-        } else {
-            dependencies.insert(
-                base_class_name
-                    .to_string()
-                    .replace("*", "")
-                    .remove_sharedptr(),
-            );
+        if let Some(base_class) = class_container.find_maybe_namespace(base_class_name.to_string())
+        {
+            dependencies.insert(base_class.class_name);
         }
     }
 
     for prop in &class.properties {
         if !prop.property_type.is_empty() {
-            if let Some(namespace) = prop.property_type.get_namespace() {
-                // we need to check if namespace exists before inserting namespace as dep, if not insert the else clause
-                dependencies.insert(namespace);
-            } else {
-                dependencies.insert(
-                    prop.property_type
-                        .to_string()
-                        .replace("*", "")
-                        .remove_sharedptr()
-                        .remove_duplicate_class(),
-                );
+            if let Some(prop_class) = class_container.find_maybe_namespace(
+                prop.property_type
+                    .to_string()
+                    .replace("*", "")
+                    .remove_sharedptr()
+                    .remove_duplicate_class(),
+            ) {
+                dependencies.insert(prop_class.class_name);
             }
         }
     }
@@ -598,7 +730,7 @@ fn collect_deps(class: &WizClass) -> Vec<Dependency> {
     }
 
     for subclass in &class.sub_classes {
-        let subclass_deps = collect_deps(subclass);
+        let subclass_deps = collect_deps(subclass, class_container);
         let subclass_dep_names = subclass_deps.into_iter().map(|dep| dep.name);
         dependencies.extend(subclass_dep_names);
     }
@@ -613,10 +745,10 @@ fn collect_deps(class: &WizClass) -> Vec<Dependency> {
 }
 
 impl Package {
-    fn from(class: &WizClass) -> Package {
+    fn from(class: &WizClass, class_container: &ClassesContainer) -> Package {
         Package {
             name: class.class_name.clone(),
-            dependencies: collect_deps(class),
+            dependencies: collect_deps(class, class_container),
         }
     }
 }
@@ -635,8 +767,7 @@ impl dependency_graph::Node for Package {
 
 async fn dump_typedefs() -> Result<String, std::io::Error> {
     let mut res: Vec<u8> = Vec::new();
-    let mut f =
-        File::open("/home/binarybandit/Desktop/Wizard101Launcher/test/Bin/WizardClientDefs.xml")?;
+    let mut f = File::open("./test/Bin/WizardClientDefs.xml")?;
     f.read_to_end(&mut res).expect("whoops");
     Ok(String::from_utf8_lossy(&res).to_string())
 }
@@ -654,15 +785,17 @@ pub async fn dump_wiz_classes() {
     classes.populate_subclasses_and_namespaces();
     // classes.populate_base_class_indices(); // have to do this twice as subclasses change the base class index, subclasses won't have correct index, but shouldn't be needed anymore
 
-    let mut packages: Vec<Package> = classes
+    let valid_classes: Vec<WizClass> = classes
         .classes
         .iter()
         .cloned()
         .filter(|class| if class.is_subclass { false } else { true })
-        .collect::<Vec<_>>()
-        .iter()
-        .map(Package::from)
-        .collect();
+        .collect::<Vec<_>>();
+
+    let mut packages: Vec<Package> = vec![];
+    for class in valid_classes {
+        packages.push(Package::from(&class, &classes));
+    }
 
     for package in packages.iter_mut() {
         package
@@ -696,6 +829,8 @@ using gid = uint64_t;
 using SerializedBuffer = void*;
 
 using Euler = void*; // what??
+
+using MISSING_TYPE = int; // missing from WizardClientDefs
 
 template <class T>
 using SharedPointer = std::shared_ptr<T>;
@@ -737,7 +872,18 @@ struct Color {
     float b, r, g, a;
 };
 
+struct Quaternion {
+    double w;
+    double x;
+    double y;
+    double z;
+};
+
 struct s24 {
+    int data : 24;
+};
+
+struct u24 {
     unsigned int data : 24;
 };
 
@@ -764,19 +910,15 @@ struct bui7 {
         match package {
             Step::Resolved(package) => {
                 // Check if the class has already been serialized
-                if serialized_classes.contains(&package.name) {
+                if serialized_classes.contains(&package.name)
+                    || package.name.contains("class MapInfoManager::MapInfo")
+                {
                     continue; // Skip serialization
                 }
 
-                if let Some(found_class) = classes
-                    .classes
-                    .iter()
-                    .find(|class| class.class_name == package.name)
-                {
-                    ret += &format!("{}\n", found_class.serialize(false));
+                if let Some(found_class) = classes.find_by_name(package.name.clone()) {
+                    ret += &format!("{}\n", found_class.serialize(false).replace(">>", "> >"));
                     serialized_classes.insert(package.name.clone());
-                } else {
-                    println!("Couldn't find class during serialization: {}", package.name);
                 }
             }
             Step::Unresolved(_) => {}
