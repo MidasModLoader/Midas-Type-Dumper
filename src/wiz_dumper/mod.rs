@@ -298,6 +298,7 @@ enum ClassTypeT {
 #[derive(Debug, Clone)]
 struct GetterSetter {
     full_type: String,
+    safe_name: String,
     full_get_name: String,
     full_set_name: String,
     prop: ClassProperty,
@@ -327,7 +328,9 @@ impl GetterSetter {
             safe_name = capitalize_first(&safe_name);
         }
 
-        let full_get_name = format!(
+        safe_name = safe_name.replace("SName", "Name");
+
+        let mut full_get_name = format!(
             "{}{}",
             if pascal {
                 String::from("Get")
@@ -345,25 +348,38 @@ impl GetterSetter {
             }
         );
 
+        full_get_name = full_get_name.replace("IsIs", "");
+
         let full_set_name = full_get_name.replace("get", "set").replace("Get", "Set");
 
         GetterSetter {
             full_type,
+            safe_name,
             full_get_name,
             full_set_name,
             prop: prop.clone(),
         }
     }
 
-    fn serialize(&self, pascal: bool) -> String {
+    fn serialize(&self) -> String {
         let mut ret = String::from("");
 
         // getter
+        if !self.prop.property_note.is_empty()
+            && self.prop.property_note.replace("m_", "") != self.prop.property_name.as_safe()
+        {
+            ret += &format!("\n     // Get {}", self.prop.property_note);
+        }
         ret += &format!(
             "\n     {} {}() {{ return *reinterpret_cast<{}*>(this + {}); }}\n",
             self.full_type, self.full_get_name, self.full_type, self.prop.offset,
         );
 
+        if !self.prop.property_note.is_empty()
+            && self.prop.property_note.replace("m_", "") != self.prop.property_name.as_safe()
+        {
+            ret += &format!("\n     // Set {}", self.prop.property_note);
+        }
         // setter
         ret += &format!(
             "\n     void {}({} val) {{ *reinterpret_cast<{}*>(this + {}) = val; }}\n",
@@ -533,7 +549,7 @@ impl WizClass {
 
         if total_size < 0 {
             class_def +=
-                "     /*  error calculating total class size, summed parent sizes > this class size */      "
+                "\n     /*  error calculating total class size, summed parent sizes > this class size */      \n"
         } else {
             class_def += &format!("     uint8_t padding[{}];\n", total_size.to_string());
         }
@@ -577,29 +593,34 @@ impl WizClass {
 
         for getter_setter in &self.getters_setters {
             if getter_setter.prop.enum_info.is_none() {
-                class_def += &getter_setter.serialize(true);
+                class_def += &getter_setter.serialize();
             }
         }
 
         // lua initializers:
         class_def += "\n     static void initialize_lua(lua_State* L) {\n";
         class_def += "          luabridge::getGlobalNamespace(L)\n";
-        class_def += &format!(
-            "               .beginClass<{}>(\"{}\")\n",
-            self.class_name.as_safe(),
-            self.class_name,
-        );
+        if let Some(base_class_name) = self.base_class_name.clone() {
+            class_def += &format!(
+                "               .deriveClass<{}, {}>(\"{}\")\n",
+                self.class_name.as_safe(),
+                base_class_name.as_safe(),
+                self.class_name.as_safe(),
+            );
+        } else {
+            class_def += &format!(
+                "               .beginClass<{}>(\"{}\")\n",
+                self.class_name.as_safe(),
+                self.class_name,
+            );
+        }
         for getter_setter in &self.getters_setters {
             if getter_setter.prop.enum_info.is_none() {
                 class_def += &format!(
-                    "                    .addFunction(\"{}\", &{}::{})\n",
-                    getter_setter.full_get_name,
+                    "                    .addProperty(\"{}\", &{}::{}, &{}::{})\n",
+                    getter_setter.safe_name,
                     self.class_name.as_safe(),
-                    getter_setter.full_get_name
-                );
-                class_def += &format!(
-                    "                    .addFunction(\"{}\", &{}::{})\n",
-                    getter_setter.full_set_name,
+                    getter_setter.full_get_name,
                     self.class_name.as_safe(),
                     getter_setter.full_set_name
                 );
