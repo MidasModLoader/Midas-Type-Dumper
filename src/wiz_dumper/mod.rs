@@ -923,11 +923,21 @@ pub async fn dump_wiz_classes() {
     let graph = DependencyGraph::from(&packages[..]);
 
     let mut ret = String::from(
-        "#include <string>
+        "#ifndef MIDAS_TYPES_H
+#define MIDAS_TYPES_H
+#include <string>
 #include <memory>
 #include <cstdint>
 #include <vector>
 #include <list>
+
+// lua includes
+
+#include <lua.h>
+#include <lualib.h>
+#include <luacode.h>
+#include <LuaBridge/LuaBridge.h>
+#include <LuaBridge/Vector.h>
 
 /* BEGIN OVERRIDES */
 /* END OVERRIDES */
@@ -1052,7 +1062,9 @@ struct bui7 {
         }
     }
 
-    let mut class_file = File::create("classes.cpp").unwrap();
+    ret += "#endif //MIDAS_TYPES_H";
+
+    let mut class_file = File::create("types.h").unwrap();
     class_file.write_all(ret.as_bytes()).unwrap();
 
     let mut file = File::create("graph").unwrap();
