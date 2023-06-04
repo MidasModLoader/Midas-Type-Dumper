@@ -371,8 +371,8 @@ impl GetterSetter {
             ret += &format!("\n     // Get {}", self.prop.property_note);
         }
         ret += &format!(
-            "\n     {} {}() {{ return *reinterpret_cast<{}*>(this + {}); }}\n",
-            self.full_type, self.full_get_name, self.full_type, self.prop.offset,
+            "\n     auto {}() {{ return reinterpret_cast<{}*>(reinterpret_cast<uintptr_t>(this) + {}); }}\n",
+            self.full_get_name, self.full_type, self.prop.offset,
         );
 
         if !self.prop.property_note.is_empty()
@@ -1037,7 +1037,6 @@ struct bui7 {
     unsigned int data : 7;
 };\n",
     );
-    
 
     ret += "#endif //MIDAS_COMMON_H";
 
@@ -1072,7 +1071,8 @@ struct bui7 {
                     }
 
                     let mut real_name = if let Some(namespace) = &found_class.namespace {
-                        found_class.class_name
+                        found_class
+                            .class_name
                             .as_safe()
                             .replace(&format!("{}::", namespace.as_safe()), "")
                     } else {
@@ -1083,12 +1083,18 @@ struct bui7 {
                         real_name = real_name.remove_namespace();
                     }
 
-                    let mut classes_file_text = String::from(format!("#ifndef MIDAS_{}_H
+                    let mut classes_file_text = String::from(format!(
+                        "#ifndef MIDAS_{}_H
 #define MIDAS_{}_H\n
-#include \"common.h\"\n", real_name, real_name));
+#include \"common.h\"\n",
+                        real_name, real_name
+                    ));
 
                     for dep in package.dependencies.clone() {
-                        if dep.name.contains("Point<") || dep.name.contains("Size<") || dep.name.contains("Rect<") {
+                        if dep.name.contains("Point<")
+                            || dep.name.contains("Size<")
+                            || dep.name.contains("Rect<")
+                        {
                             continue;
                         }
                         match dep.name.as_safe().as_str() {
@@ -1109,19 +1115,19 @@ struct bui7 {
 
                             _ => classes_file_text += &format!("#include \"{}.h\"\n", dep.name.as_safe())
                         }
-                        
                     }
-                    
+
                     classes_file_text += &format!(
                         "\n{}\n",
                         found_class
                             .serialize(false, total_size)
                             .replace(">>", "> >")
                     );
-                    
+
                     classes_file_text += &format!("#endif //MIDAS_{}_H", real_name);
 
-                    let mut class_file = File::create(&format!("midas_types/{}.h", real_name)).unwrap();
+                    let mut class_file =
+                        File::create(&format!("midas_types/{}.h", real_name)).unwrap();
                     class_file.write_all(classes_file_text.as_bytes()).unwrap();
 
                     serialized_classes.insert(package.name.clone());
