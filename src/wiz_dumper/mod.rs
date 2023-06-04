@@ -613,7 +613,7 @@ impl WizClass {
             class_def += &format!(
                 "               .beginClass<{}>(\"{}\")\n",
                 self.class_name.as_safe(),
-                self.class_name,
+                self.class_name.as_safe(),
             );
         }
         for getter_setter in &self.getters_setters {
