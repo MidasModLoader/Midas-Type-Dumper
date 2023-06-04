@@ -382,7 +382,7 @@ impl GetterSetter {
         }
         // setter
         ret += &format!(
-            "\n     void {}({} val) {{ *reinterpret_cast<{}*>(this + {}) = val; }}\n",
+            "\n     void {}({} val) {{ *reinterpret_cast<{}*>(reinterpret_cast<uintptr_t>(this) + {}) = val; }}\n",
             self.full_set_name, self.full_type, self.full_type, self.prop.offset,
         );
         ret
