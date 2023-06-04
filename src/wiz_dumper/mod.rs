@@ -617,7 +617,7 @@ impl WizClass {
             );
         }
         for getter_setter in &self.getters_setters {
-            if getter_setter.prop.enum_info.is_none() {
+            /*if getter_setter.prop.enum_info.is_none() {
                 class_def += &format!(
                     "                    .addProperty(\"{}\", &{}::{}, &{}::{})\n",
                     getter_setter.safe_name,
@@ -625,6 +625,20 @@ impl WizClass {
                     getter_setter.full_get_name,
                     self.class_name.as_safe(),
                     getter_setter.full_set_name
+                );
+            }*/
+            if getter_setter.prop.enum_info.is_none() {
+                class_def += &format!(
+                    "                    .addFunction(\"{}\", &{}::{})\n",
+                    getter_setter.full_get_name,
+                    self.class_name.as_safe(),
+                    getter_setter.full_get_name,
+                );
+                class_def += &format!(
+                    "                    .addFunction(\"{}\", &{}::{})\n",
+                    getter_setter.full_set_name,
+                    self.class_name.as_safe(),
+                    getter_setter.full_set_name,
                 );
             }
         }
@@ -925,13 +939,15 @@ pub async fn dump_wiz_classes() {
     let graph = DependencyGraph::from(&packages[..]);
 
     let mut ret = String::from(
-        "#ifndef MIDAS_TYPES_H
-#define MIDAS_TYPES_H
+        "#ifndef MIDAS_COMMON_H
+#define MIDAS_COMMON_H
 #include <string>
 #include <memory>
 #include <cstdint>
 #include <vector>
 #include <list>
+#include <locale>
+#include <codecvt>
 
 // lua includes
 
@@ -941,15 +957,12 @@ pub async fn dump_wiz_classes() {
 #include <LuaBridge/LuaBridge.h>
 #include <LuaBridge/Vector.h>
 
-/* BEGIN OVERRIDES */
-/* END OVERRIDES */
-
 /* PROPERTYCLASS TYPE DEFINITIONS */
 using gid = uint64_t;
 
-using SerializedBuffer = void*;
+using SerializedBuffer = intptr_t;
 
-using Euler = void*; // what??
+using Euler = intptr_t; // what??
 
 using MISSING_TYPE = int; // missing from WizardClientDefs
 
@@ -1022,10 +1035,17 @@ struct bui5 {
 
 struct bui7 {
     unsigned int data : 7;
-};
-
-/* START PROPERTYCLASSES */\n",
+};\n",
     );
+    
+
+    ret += "#endif //MIDAS_COMMON_H";
+
+    std::fs::create_dir("midas_types");
+
+    let mut common_file = File::create("midas_types/common.h").unwrap();
+    common_file.write_all(ret.as_bytes()).unwrap();
+
     let mut serialized_classes = HashSet::new(); // Track serialized classes
     for package in graph {
         match package {
@@ -1051,23 +1071,65 @@ struct bui7 {
                         }
                     }
 
-                    ret += &format!(
-                        "{}\n",
+                    let mut real_name = if let Some(namespace) = &found_class.namespace {
+                        found_class.class_name
+                            .as_safe()
+                            .replace(&format!("{}::", namespace.as_safe()), "")
+                    } else {
+                        found_class.class_name.as_safe()
+                    };
+
+                    if found_class.is_subclass {
+                        real_name = real_name.remove_namespace();
+                    }
+
+                    let mut classes_file_text = String::from(format!("#ifndef MIDAS_{}_H
+#define MIDAS_{}_H\n
+#include \"common.h\"\n", real_name, real_name));
+
+                    for dep in package.dependencies.clone() {
+                        if dep.name.contains("Point<") || dep.name.contains("Size<") || dep.name.contains("Rect<") {
+                            continue;
+                        }
+                        match dep.name.as_safe().as_str() {
+                            "std::basic_string<char,struct std::char_traits<char>,class std::allocator<char> >" => {},
+                            "std::basic_string<wchar_t,struct std::char_traits<wchar_t>,class std::allocator<wchar_t> >" => {},
+                            "std::basic_string<wchar_t,std::char_traits<wchar_t>,std::allocator<wchar_t> >" => {},
+                            "float" => {},
+                            "int" => {},
+                            "std::string" => {},
+                            "std::wstring" => {},
+                            "unsigned int" => {},
+                            "unsigned long" => {},
+                            "void" => {},
+                            "bool" => {},
+                            "char" => {},
+                            "Color" => {},
+                            "gid" => {},
+
+                            _ => classes_file_text += &format!("#include \"{}.h\"\n", dep.name.as_safe())
+                        }
+                        
+                    }
+                    
+                    classes_file_text += &format!(
+                        "\n{}\n",
                         found_class
                             .serialize(false, total_size)
                             .replace(">>", "> >")
                     );
+                    
+                    classes_file_text += &format!("#endif //MIDAS_{}_H", real_name);
+
+                    let mut class_file = File::create(&format!("midas_types/{}.h", real_name)).unwrap();
+                    class_file.write_all(classes_file_text.as_bytes()).unwrap();
+
                     serialized_classes.insert(package.name.clone());
                 }
             }
             Step::Unresolved(_) => {}
         }
     }
-
-    ret += "#endif //MIDAS_TYPES_H";
-
-    let mut class_file = File::create("types.h").unwrap();
-    class_file.write_all(ret.as_bytes()).unwrap();
 
     let mut file = File::create("graph").unwrap();
     file.write_all(&format!("{:#?}\n", packages).as_bytes());
