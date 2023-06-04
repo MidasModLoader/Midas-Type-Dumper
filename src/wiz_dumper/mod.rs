@@ -551,7 +551,9 @@ impl WizClass {
             class_def +=
                 "\n     /*  error calculating total class size, summed parent sizes > this class size */      \n"
         } else {
-            class_def += &format!("     uint8_t padding[{}];\n", total_size.to_string());
+            if total_size > 0 {
+                class_def += &format!("     uint8_t padding[{}];\n", total_size.to_string());
+            }
         }
 
         let mut sorted = self.sub_classes.clone();
