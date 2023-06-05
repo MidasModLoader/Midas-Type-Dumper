@@ -438,8 +438,6 @@ impl WizClass {
 
         properties.sort_by_key(|prop| prop.offset.parse::<i32>().unwrap_or(0));
 
-        let getters_setters = properties.iter().map(GetterSetter::new).collect();
-
         let functions = node
             .children()
             .filter(|child| child.tag_name().name() == "Function")
@@ -467,7 +465,7 @@ impl WizClass {
             sub_classes: vec![],
             namespace: None,
             is_subclass: false,
-            getters_setters,
+            getters_setters: vec![],
         }
     }
 
@@ -531,11 +529,7 @@ impl WizClass {
                 type_str,
                 real_name,
                 self.base_class_name.as_ref().unwrap().as_safe().clone(),
-                if self.is_empty() {
-                    String::from("")
-                } else {
-                    String::from("\n")
-                }
+                String::from("\n")
             );
         }
 
@@ -706,6 +700,16 @@ impl ClassesContainer {
         }
     }
 
+    fn populate_getter_setter(&mut self) {
+        for class_index in 0..self.classes.len() {
+            self.classes[class_index].getters_setters = self.classes[class_index]
+                .properties
+                .iter()
+                .map(GetterSetter::new)
+                .collect();
+        }
+    }
+
     fn populate_base_class_indices(&mut self) {
         for class_index in 0..self.classes.len() {
             let base_class_name = self.classes[class_index]
@@ -734,11 +738,12 @@ impl ClassesContainer {
                         .iter()
                         .any(|func_p| func.function_name == func_p.function_name)
                 });
+
                 class.properties.retain(|prop| {
                     !b_class
                         .properties
                         .iter()
-                        .any(|prop_p| prop.property_name == prop_p.property_name)
+                        .any(|prop_p| prop.offset == prop_p.offset)
                 });
             }
         }
@@ -915,6 +920,7 @@ pub async fn dump_wiz_classes() {
     classes.populate_base_class_indices();
     classes.filter_shared_data();
     classes.populate_subclasses_and_namespaces();
+    classes.populate_getter_setter();
     // classes.populate_base_class_indices(); // have to do this twice as subclasses change the base class index, subclasses won't have correct index, but shouldn't be needed anymore
 
     let valid_classes: Vec<WizClass> = classes
