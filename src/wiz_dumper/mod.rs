@@ -981,7 +981,7 @@ struct Point {
 
 template <typename T>
 struct Size {
-    T val;
+    T value;
 };
 
 struct Matrix3x3 {
@@ -1035,7 +1035,54 @@ struct bui5 {
 
 struct bui7 {
     unsigned int data : 7;
-};\n",
+};
+void init_common_types(lua_State *L)
+{
+    luabridge::getGlobalNamespace(L)
+        .beginClass<Rect<int>>(\"Rect\")
+        .addProperty(\"top\", &Rect<int>::top)
+        .addProperty(\"left\", &Rect<int>::left)
+        .addProperty(\"right\", &Rect<int>::right)
+        .addProperty(\"bottom\", &Rect<int>::bottom)
+        .endClass()
+        .beginClass<Point<int>>(\"Point\")
+        .addProperty(\"x\", &Point<int>::x)
+        .addProperty(\"y\", &Point<int>::y)
+        .endClass()
+        .beginClass<Size<int>>(\"Size\")
+        .addProperty(\"value\", &Size<int>::value)
+        .endClass()
+        .beginClass<Matrix3x3>(\"Matrix3x3\")
+        .addProperty(\"i\", &Matrix3x3::i)
+        .addProperty(\"j\", &Matrix3x3::j)
+        .addProperty(\"k\", &Matrix3x3::k)
+        .endClass()
+        .beginClass<SimpleFace>(\"SimpleFace\")
+        .addProperty(\"i\", &SimpleFace::vertexIndices)
+        .endClass()
+        .beginClass<SimpleVert>(\"SimpleVert\")
+        .addProperty(\"x\", &SimpleVert::x)
+        .addProperty(\"y\", &SimpleVert::y)
+        .addProperty(\"z\", &SimpleVert::z)
+        .endClass()
+        .beginClass<Vector3D>(\"Vector3D\")
+        .addProperty(\"x\", &Vector3D::x)
+        .addProperty(\"y\", &Vector3D::y)
+        .addProperty(\"z\", &Vector3D::z)
+        .endClass()
+        .beginClass<Color>(\"Color\")
+        .addProperty(\"b\", &Color::b)
+        .addProperty(\"r\", &Color::r)
+        .addProperty(\"g\", &Color::g)
+        .addProperty(\"a\", &Color::a)
+        .endClass()
+        .beginClass<Quaternion>(\"Quaternion\")
+        .addProperty(\"w\", &Quaternion::w)
+        .addProperty(\"x\", &Quaternion::x)
+        .addProperty(\"y\", &Quaternion::y)
+        .addProperty(\"z\", &Quaternion::z)
+        .endClass()
+}\n",
     );
 
     ret += "#endif //MIDAS_COMMON_H";
