@@ -14,6 +14,7 @@ trait KIString {
     fn get_namespace(&self) -> Option<String>;
 
     fn remove_namespace(&self) -> String;
+    fn force_remove_namespace(&self) -> String;
 
     fn remove_sharedptr(&self) -> String;
 
@@ -49,6 +50,13 @@ impl KIString for String {
     fn remove_namespace(&self) -> String {
         if let Some(namespace) = self.get_namespace() {
             return self.replace(&format!("{}::", namespace), "");
+        }
+        self.to_string()
+    }
+
+    fn force_remove_namespace(&self) -> String {
+        if self.contains("::") && !self.contains("std::") {
+            return self[self.find("::").unwrap() + 2..self.len()].to_string();
         }
         self.to_string()
     }
@@ -533,18 +541,17 @@ impl WizClass {
 
         class_def += &format!(
             "{}",
-            if self.is_empty() {
+            /*if self.is_empty() {
                 String::from("")
-            } else {
-                format!(
-                    "{}public:\n",
-                    if sub_class {
-                        String::from("     ")
-                    } else {
-                        String::from("")
-                    },
-                )
-            }
+            } else {*/
+            format!(
+                "{}public:\n",
+                if sub_class {
+                    String::from("     ")
+                } else {
+                    String::from("")
+                },
+            ) //}
         );
 
         if total_size < 0 {
@@ -948,6 +955,7 @@ pub async fn dump_wiz_classes() {
 #include <list>
 #include <locale>
 #include <codecvt>
+#include <array>
 
 // lua includes
 
@@ -959,6 +967,8 @@ pub async fn dump_wiz_classes() {
 
 /* PROPERTYCLASS TYPE DEFINITIONS */
 using gid = uint64_t;
+
+using ObjectType = intptr_t;
 
 using SerializedBuffer = intptr_t;
 
@@ -985,13 +995,13 @@ struct Size {
 };
 
 struct Matrix3x3 {
-    float i[3];
-    float j[3];
-    float k[3];
+    std::array<float, 3> i;
+    std::array<float, 3> j;
+    std::array<float, 3> k;
 };
 
 struct SimpleFace {
-    int vertexIndices[3]; // Assuming triangular faces
+    std::array<int, 3> vertexIndices; // Assuming triangular faces
 };
 
 struct SimpleVert {
@@ -1045,9 +1055,13 @@ void init_common_types(lua_State *L)
         .addProperty(\"right\", &Rect<int>::right)
         .addProperty(\"bottom\", &Rect<int>::bottom)
         .endClass()
-        .beginClass<Point<int>>(\"Point\")
+        .beginClass<Point<int>>(\"PointInt\")
         .addProperty(\"x\", &Point<int>::x)
         .addProperty(\"y\", &Point<int>::y)
+        .endClass()
+        .beginClass<Point<float>>(\"PointFloat\")
+        .addProperty(\"x\", &Point<float>::x)
+        .addProperty(\"y\", &Point<float>::y)
         .endClass()
         .beginClass<Size<int>>(\"Size\")
         .addProperty(\"value\", &Size<int>::value)
@@ -1081,7 +1095,7 @@ void init_common_types(lua_State *L)
         .addProperty(\"x\", &Quaternion::x)
         .addProperty(\"y\", &Quaternion::y)
         .addProperty(\"z\", &Quaternion::z)
-        .endClass()
+        .endClass();
 }\n",
     );
 
@@ -1092,6 +1106,7 @@ void init_common_types(lua_State *L)
     let mut common_file = File::create("midas_types/common.h").unwrap();
     common_file.write_all(ret.as_bytes()).unwrap();
 
+    let mut includes_text = String::from("");
     let mut serialized_classes = HashSet::new(); // Track serialized classes
     for package in graph {
         match package {
@@ -1117,14 +1132,17 @@ void init_common_types(lua_State *L)
                         }
                     }
 
-                    let mut real_name = if let Some(namespace) = &found_class.namespace {
+                    /*let mut real_name = if let Some(namespace) = &found_class.namespace {
                         found_class
                             .class_name
                             .as_safe()
                             .replace(&format!("{}::", namespace.as_safe()), "")
                     } else {
                         found_class.class_name.as_safe()
-                    };
+                    };*/
+                    let mut real_name = found_class.class_name.as_safe().remove_namespace();
+
+                    includes_text += &format!("#include \"{}.h\"\n", real_name);
 
                     if found_class.is_subclass {
                         real_name = real_name.remove_namespace();
@@ -1138,13 +1156,15 @@ void init_common_types(lua_State *L)
                     ));
 
                     for dep in package.dependencies.clone() {
-                        if dep.name.contains("Point<")
-                            || dep.name.contains("Size<")
-                            || dep.name.contains("Rect<")
+                        let dep_name = dep.name.remove_namespace().as_safe();
+                        if dep_name.contains("Point<")
+                            || dep_name.contains("Size<")
+                            || dep_name.contains("Rect<")
+                            || dep_name.contains("Delegate<")
                         {
                             continue;
                         }
-                        match dep.name.as_safe().as_str() {
+                        match dep_name.as_str() {
                             "std::basic_string<char,struct std::char_traits<char>,class std::allocator<char> >" => {},
                             "std::basic_string<wchar_t,struct std::char_traits<wchar_t>,class std::allocator<wchar_t> >" => {},
                             "std::basic_string<wchar_t,std::char_traits<wchar_t>,std::allocator<wchar_t> >" => {},
@@ -1159,8 +1179,15 @@ void init_common_types(lua_State *L)
                             "char" => {},
                             "Color" => {},
                             "gid" => {},
+                            "uint64_t" => {},
+                            "double" => {},
+                            "Vector3D" => {},
+                            "ObjectType" => {},
+                            "CrownShopViews" => {},
+                            "Item" => {},
+                            "ProxyType" => {},
 
-                            _ => classes_file_text += &format!("#include \"{}.h\"\n", dep.name.as_safe())
+                            _ => classes_file_text += &format!("#include \"{}.h\"\n", dep_name)
                         }
                     }
 
@@ -1184,6 +1211,6 @@ void init_common_types(lua_State *L)
         }
     }
 
-    let mut file = File::create("graph").unwrap();
-    file.write_all(&format!("{:#?}\n", packages).as_bytes());
+    //let mut class_file = File::create("midas_types/includes.h").unwrap();
+    //class_file.write_all(includes_text.as_bytes()).unwrap();
 }
