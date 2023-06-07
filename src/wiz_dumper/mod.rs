@@ -310,10 +310,11 @@ struct GetterSetter {
     full_get_name: String,
     full_set_name: String,
     prop: ClassProperty,
+    class_name: String,
 }
 
 impl GetterSetter {
-    fn new(prop: &ClassProperty) -> GetterSetter {
+    fn new(prop: &ClassProperty, class_name: String) -> GetterSetter {
         let pascal = true; // TODO: will this work with map as a function param?
         let full_type = format!(
             "{}{}{}",
@@ -366,10 +367,11 @@ impl GetterSetter {
             full_get_name,
             full_set_name,
             prop: prop.clone(),
+            class_name,
         }
     }
 
-    fn serialize(&self) -> String {
+    fn serialize_h(&self) -> String {
         let mut ret = String::from("");
 
         // getter
@@ -378,10 +380,7 @@ impl GetterSetter {
         {
             ret += &format!("\n     // Get {}", self.prop.property_note);
         }
-        ret += &format!(
-            "\n     auto {}() {{ return reinterpret_cast<{}*>(reinterpret_cast<uintptr_t>(this) + {}); }}\n",
-            self.full_get_name, self.full_type, self.prop.offset,
-        );
+        ret += &format!("\n     {}* {}();\n", self.full_type, self.full_get_name);
 
         if !self.prop.property_note.is_empty()
             && self.prop.property_note.replace("m_", "") != self.prop.property_name.as_safe()
@@ -390,8 +389,35 @@ impl GetterSetter {
         }
         // setter
         ret += &format!(
-            "\n     void {}({} val) {{ *reinterpret_cast<{}*>(reinterpret_cast<uintptr_t>(this) + {}) = val; }}\n",
-            self.full_set_name, self.full_type, self.full_type, self.prop.offset,
+            "\n     void {}({} val);\n",
+            self.full_set_name, self.full_type
+        );
+        ret
+    }
+
+    fn serialize_cpp(&self) -> String {
+        let mut ret = String::from("");
+
+        // getter
+        if !self.prop.property_note.is_empty()
+            && self.prop.property_note.replace("m_", "") != self.prop.property_name.as_safe()
+        {
+            ret += &format!("\n// Get {}", self.prop.property_note);
+        }
+        ret += &format!(
+            "\n{}* {}::{}() {{\n    return reinterpret_cast<{}*>(reinterpret_cast<uintptr_t>(this) + {});\n}}\n",
+            self.full_type, self.class_name, self.full_get_name, self.full_type, self.prop.offset,
+        );
+
+        if !self.prop.property_note.is_empty()
+            && self.prop.property_note.replace("m_", "") != self.prop.property_name.as_safe()
+        {
+            ret += &format!("\n// Set {}", self.prop.property_note);
+        }
+        // setter
+        ret += &format!(
+            "\nvoid {}::{}({} val) {{\n    *reinterpret_cast<{}*>(reinterpret_cast<uintptr_t>(this) + {}) = val;\n}}\n",
+            self.class_name, self.full_set_name, self.full_type, self.full_type, self.prop.offset,
         );
         ret
     }
@@ -477,6 +503,17 @@ impl WizClass {
 
     fn len(&self) -> usize {
         self.functions.len() + self.sub_classes.len() + self.properties.len()
+    }
+
+    fn get_real_name(&self) -> String {
+        let mut real_name = if let Some(namespace) = &self.namespace {
+            self.class_name
+                .as_safe()
+                .replace(&format!("{}::", namespace.as_safe()), "")
+        } else {
+            self.class_name.as_safe()
+        };
+        real_name
     }
 
     fn serialize(&self, sub_class: bool, total_size: i64) -> String {
@@ -594,57 +631,13 @@ impl WizClass {
             );*/
         }
 
-        for getter_setter in &self.getters_setters {
-            if getter_setter.prop.enum_info.is_none() {
-                class_def += &getter_setter.serialize();
-            }
-        }
+        class_def += &format!("\n    static void initialize_lua(lua_State* L);\n");
 
-        // lua initializers:
-        class_def += "\n     static void initialize_lua(lua_State* L) {\n";
-        class_def += "          luabridge::getGlobalNamespace(L)\n";
-        if let Some(base_class_name) = self.base_class_name.clone() {
-            class_def += &format!(
-                "               .deriveClass<{}, {}>(\"{}\")\n",
-                self.class_name.as_safe(),
-                base_class_name.as_safe(),
-                self.class_name.as_safe(),
-            );
-        } else {
-            class_def += &format!(
-                "               .beginClass<{}>(\"{}\")\n",
-                self.class_name.as_safe(),
-                self.class_name.as_safe(),
-            );
-        }
         for getter_setter in &self.getters_setters {
-            /*if getter_setter.prop.enum_info.is_none() {
-                class_def += &format!(
-                    "                    .addProperty(\"{}\", &{}::{}, &{}::{})\n",
-                    getter_setter.safe_name,
-                    self.class_name.as_safe(),
-                    getter_setter.full_get_name,
-                    self.class_name.as_safe(),
-                    getter_setter.full_set_name
-                );
-            }*/
             if getter_setter.prop.enum_info.is_none() {
-                class_def += &format!(
-                    "                    .addFunction(\"{}\", &{}::{})\n",
-                    getter_setter.full_get_name,
-                    self.class_name.as_safe(),
-                    getter_setter.full_get_name,
-                );
-                class_def += &format!(
-                    "                    .addFunction(\"{}\", &{}::{})\n",
-                    getter_setter.full_set_name,
-                    self.class_name.as_safe(),
-                    getter_setter.full_set_name,
-                );
+                class_def += &getter_setter.serialize_h();
             }
         }
-        class_def += "               .endClass();\n";
-        class_def += "     }\n";
 
         class_def += &format!(
             "{}}};\n",
@@ -705,7 +698,9 @@ impl ClassesContainer {
             self.classes[class_index].getters_setters = self.classes[class_index]
                 .properties
                 .iter()
-                .map(GetterSetter::new)
+                .map(|property| {
+                    GetterSetter::new(property, self.classes[class_index].get_real_name())
+                })
                 .collect();
         }
     }
@@ -941,14 +936,6 @@ pub async fn dump_wiz_classes() {
             .retain(|dependency| dependency.name != package.name);
     }
 
-    let cloned = packages.clone();
-
-    /*let names_with_deps: Vec<&String> = cloned
-        .iter()
-        .flat_map(|package| package.dependencies.iter().map(|dep| &dep.name))
-        .collect();
-    packages.retain(|package| names_with_deps.contains(&&package.name));*/
-
     let graph = DependencyGraph::from(&packages[..]);
 
     let mut ret = String::from(
@@ -1112,7 +1099,10 @@ void init_common_types(lua_State *L)
     let mut common_file = File::create("midas_types/common.h").unwrap();
     common_file.write_all(ret.as_bytes()).unwrap();
 
+    let mut parent_classes = HashSet::new();
+
     let mut includes_text = String::from("");
+
     let mut serialized_classes = HashSet::new(); // Track serialized classes
     for package in graph {
         match package {
@@ -1128,9 +1118,15 @@ void init_common_types(lua_State *L)
                     let mut total_size = found_class.size.parse::<i64>().unwrap();
                     if found_class.base_class_name.is_some() {
                         let mut parent_name = found_class.clone().base_class_name.unwrap();
-                        while let Some(parent_class) = classes.find_by_name(parent_name) {
+                        while let Some(parent_class) = classes.find_by_name(parent_name.clone()) {
                             total_size -= parent_class.size.parse::<i64>().unwrap();
                             if parent_class.base_class_name.is_some() {
+                                // insert parent classes for cast reflection
+                                if parent_class.base_class_name.clone().unwrap().as_safe()
+                                    == "PropertyClass"
+                                {
+                                    parent_classes.insert(parent_name.as_safe().remove_namespace());
+                                }
                                 parent_name = parent_class.base_class_name.unwrap();
                             } else {
                                 break;
@@ -1138,23 +1134,13 @@ void init_common_types(lua_State *L)
                         }
                     }
 
-                    /*let mut real_name = if let Some(namespace) = &found_class.namespace {
-                        found_class
-                            .class_name
-                            .as_safe()
-                            .replace(&format!("{}::", namespace.as_safe()), "")
-                    } else {
-                        found_class.class_name.as_safe()
-                    };*/
                     let mut real_name = found_class.class_name.as_safe().remove_namespace();
-
-                    includes_text += &format!("#include \"{}.h\"\n", real_name);
 
                     if found_class.is_subclass {
                         real_name = real_name.remove_namespace();
                     }
 
-                    let mut classes_file_text = String::from(format!(
+                    let mut classes_header_text = String::from(format!(
                         "#ifndef MIDAS_{}_H
 #define MIDAS_{}_H\n
 #include \"common.h\"\n",
@@ -1193,22 +1179,85 @@ void init_common_types(lua_State *L)
                             "Item" => {},
                             "ProxyType" => {},
 
-                            _ => classes_file_text += &format!("#include \"{}.h\"\n", dep_name)
+                            _ => classes_header_text += &format!("#include \"{}.h\"\n", dep_name)
                         }
                     }
 
-                    classes_file_text += &format!(
+                    classes_header_text += &format!(
                         "\n{}\n",
                         found_class
                             .serialize(false, total_size)
                             .replace(">>", "> >")
                     );
 
-                    classes_file_text += &format!("#endif //MIDAS_{}_H", real_name);
+                    classes_header_text += &format!("#endif //MIDAS_{}_H", real_name);
+
+                    includes_text += &format!("#include \"{}.h\"\n", real_name);
 
                     let mut class_file =
                         File::create(&format!("midas_types/{}.h", real_name)).unwrap();
-                    class_file.write_all(classes_file_text.as_bytes()).unwrap();
+                    class_file
+                        .write_all(classes_header_text.as_bytes())
+                        .unwrap();
+
+                    let mut class_text = String::from("");
+                    class_text += &format!("#include \"{}.h\"\n", real_name);
+
+                    if let Some(namespace) = &found_class.namespace {
+                        class_text += &format!("namespace {}{{\n", namespace.as_safe())
+                    }
+
+                    for gs_c in found_class.getters_setters.clone() {
+                        if gs_c.prop.enum_info.is_none() {
+                            class_text += &gs_c.serialize_cpp();
+                        }
+                    }
+
+                    // lua initializers:
+                    class_text +=
+                        &format!("\nvoid {}::initialize_lua(lua_State* L) {{\n", real_name);
+                    class_text += "    luabridge::getGlobalNamespace(L)\n";
+                    if let Some(base_class_name) = found_class.base_class_name.clone() {
+                        class_text += &format!(
+                            "        .deriveClass<{}, {}>(\"{}\")\n",
+                            found_class.class_name.as_safe(),
+                            base_class_name.as_safe(),
+                            found_class.class_name.as_safe(),
+                        );
+                    } else {
+                        class_text += &format!(
+                            "        .beginClass<{}>(\"{}\")\n",
+                            found_class.class_name.as_safe(),
+                            found_class.class_name.as_safe(),
+                        );
+                    }
+
+                    for getter_setter in &found_class.getters_setters {
+                        if getter_setter.prop.enum_info.is_none() {
+                            class_text += &format!(
+                                "        .addFunction(\"{}\", &{}::{})\n",
+                                getter_setter.full_get_name,
+                                found_class.class_name.as_safe(),
+                                getter_setter.full_get_name,
+                            );
+                            class_text += &format!(
+                                "        .addFunction(\"{}\", &{}::{})\n",
+                                getter_setter.full_set_name,
+                                found_class.class_name.as_safe(),
+                                getter_setter.full_set_name,
+                            );
+                        }
+                    }
+                    class_text += "    .endClass();\n";
+                    class_text += "}\n";
+
+                    if found_class.namespace.is_some() {
+                        class_text += "}";
+                    }
+
+                    let mut class_c_file =
+                        File::create(&format!("midas_types/{}.cpp", real_name)).unwrap();
+                    class_c_file.write_all(class_text.as_bytes()).unwrap();
 
                     serialized_classes.insert(package.name.clone());
                 }
@@ -1217,6 +1266,6 @@ void init_common_types(lua_State *L)
         }
     }
 
-    //let mut class_file = File::create("midas_types/includes.h").unwrap();
-    //class_file.write_all(includes_text.as_bytes()).unwrap();
+    let mut class_file = File::create("midas_types/includes.h").unwrap();
+    class_file.write_all(includes_text.as_bytes()).unwrap();
 }
